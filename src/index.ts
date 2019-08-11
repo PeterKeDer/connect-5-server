@@ -2,8 +2,9 @@ import express from 'express';
 import http from 'http';
 import socketio from 'socket.io';
 import bodyParser from 'body-parser';
-import { GameRoomSettings, GameRoomSettingsObject } from './models/game_room_settings';
-import { GameRoom, gameRoomRoleFrom } from './models/game_room';
+import { GameRoomSettings } from './models/game_room_settings';
+import { GameRoom, gameRoomRoleFrom, GameRoomRole } from './models/game_room';
+import { Point, Side } from './models/game';
 
 const port = 8080;
 
@@ -74,7 +75,13 @@ const Events = {
   failToJoin: 'fail-to-join',
   userJoined: 'user-joined',
   userDisconnected: 'user-disconnected',
-  disconnect: 'disconnect',
+  startGame: 'start-game',
+  stepAdded: 'step-added',
+  failToAddStep: 'fail-to-add-step',
+};
+
+const UserEvents = {
+  addStep: 'add-step',
 };
 
 /*
@@ -101,7 +108,7 @@ io.on('connection', socket => {
   const role = gameRoomRoleFrom(query.role);
 
   // If nickname is undefined, display as 'Guest'
-  let nickname: string | undefined = query.nickname;
+  let nickname = query.nickname;
 
   if (typeof nickname !== 'string' || nickname.trim.length === 0) {
     nickname = undefined;
@@ -109,7 +116,7 @@ io.on('connection', socket => {
 
   // TODO: reject with reason
   function reject() {
-    socket.send(Events.failToJoin);
+    socket.emit(Events.failToJoin);
     socket.disconnect();
   }
 
@@ -149,14 +156,70 @@ io.on('connection', socket => {
     room: room.toJson(),
   });
 
-  // TODO: start game at room if necessary
+  // Subscribe to add step event
+  socket.on(UserEvents.addStep, param => {
+    if (role !== GameRoomRole.Spectator && room.gameInProgress && room.game !== undefined) {
+      const game = room.game;
 
-  socket.on(Events.disconnect, () => {
+      if (game.isFinished) {
+        socket.emit(Events.failToAddStep);
+        return;
+      }
+
+      const point = Point.fromJson(param.point);
+
+      if (point === undefined) {
+        socket.emit(Events.failToAddStep);
+        return;
+      }
+
+      const side = game.currentSide;
+
+      // Check if player adding step is on the right side
+      if ((role === GameRoomRole.Player1 && side !== Side.Black) || (role === GameRoomRole.Player2 && side !== Side.White)) {
+        socket.emit(Events.failToAddStep);
+        return;
+      }
+
+      try {
+        game.addStep(point);
+      } catch (error) {
+        // Out of range, spot taken, etc.
+        socket.emit(Events.failToAddStep);
+        return;
+      }
+
+      if (game.isFinished) {
+        room.endGame();
+
+        // TODO: handle rematch event, quit, etc.
+      }
+
+      // Add step success
+      socket.emit(Events.stepAdded, {
+        point: point.toJson(),
+        side: side.valueOf(),
+        game: game.toJson(),
+        room: room.toJson(), // ? is this needed?
+      });
+    }
+  });
+
+  // Start game if necessary
+  if (room.canStartGame) {
+    room.startGame();
+    roomSocket.emit(Events.startGame);
+  }
+
+  socket.on('disconnect', () => {
     console.log('User disconnected');
 
     room.onUserLeave(role, userId);
 
-    // TODO: handle other stuffs like ending game if necessary
+    // End game if one of the players left
+    if (room.gameInProgress && role !== GameRoomRole.Spectator) {
+      room.endGame();
+    }
 
     roomSocket.emit(Events.userDisconnected, {
       userId,

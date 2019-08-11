@@ -27,6 +27,21 @@ interface PointObject {
 class Point {
   constructor(public x: number, public y: number) {}
 
+  static fromJson(json: any): Point | undefined {
+    if (json === undefined) {
+      return;
+    }
+
+    const x = json.x;
+    const y = json.y;
+
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      return;
+    }
+
+    return new Point(x, y);
+  }
+
   equals(point: Point): boolean {
     return this.x === point.x && this.y === point.y;
   }

@@ -29,9 +29,12 @@ interface GameRoomObject {
   player2?: string;
   spectators: string[];
   game?: GameObject;
+  gameInProgress: boolean;
 }
 
 class GameRoom {
+  gameInProgress = false;
+
   constructor(
     public id: string,
     public settings: GameRoomSettings,
@@ -49,7 +52,22 @@ class GameRoom {
       player2: this.player2,
       spectators: this.spectators,
       game: this.game === undefined ? undefined : this.game.toJson(),
+      gameInProgress: this.gameInProgress,
     };
+  }
+
+  get canStartGame(): boolean {
+    return this.player1 !== undefined && this.player2 !== undefined;
+  }
+
+  startGame(): Game {
+    this.game = new Game(this.settings.boardSize);
+    this.gameInProgress = true;
+    return this.game;
+  }
+
+  endGame() {
+    this.gameInProgress = false;
   }
 
   onUserJoin(role: GameRoomRole, userId: string): boolean {
