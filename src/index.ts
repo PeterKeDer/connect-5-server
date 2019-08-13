@@ -5,6 +5,7 @@ import bodyParser from 'body-parser';
 import { GameRoomSettings } from './models/game_room_settings';
 import { GameRoom, gameRoomRoleFrom, GameRoomRole } from './models/game_room';
 import { Point, Side } from './models/game';
+import { User } from './models/user';
 
 const port = 8080;
 
@@ -12,7 +13,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketio(server);
 
-const rooms: GameRoom[] = [];
+const rooms: GameRoom[] = [
+  new GameRoom('ok', new GameRoomSettings())
+];
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
@@ -42,7 +45,7 @@ app.post('/create-room', (req, res, next) => {
     return;
   }
 
-  const roomId = req.body.roomId;
+  const roomId = req.body.id;
 
   if (typeof roomId !== 'string') {
     res.sendStatus(400);
@@ -66,10 +69,13 @@ app.post('/create-room', (req, res, next) => {
 // Get the list of currently active rooms
 app.get('/rooms', (_, res) => {
   res.status(200).send({
-    rooms: rooms.map(room => room.toJson()),
+    rooms: rooms
+      .filter((room) => room.settings.isPublic)
+      .map(room => room.toJson()),
   });
 });
 
+// TODO: maybe condense most events into one - roomUpdated, with field lastAction to indicate what happened
 const Events = {
   connection: 'connection',
   failToJoin: 'fail-to-join',
@@ -100,19 +106,19 @@ const UserEvents = {
 */
 io.on('connection', socket => {
   console.log('User connected');
-
-  const userId = socket.id;
-
+  // TODO: if game in progress, then make user remain in lobby until the game finishes
   const query = socket.handshake.query;
   const roomId = query.roomId;
-  const role = gameRoomRoleFrom(query.role);
+  const role = gameRoomRoleFrom(Number.parseInt(query.role));
 
   // If nickname is undefined, display as 'Guest'
-  let nickname = query.nickname;
+  let nickname: string | undefined = query.nickname;
 
-  if (typeof nickname !== 'string' || nickname.trim.length === 0) {
+  if (typeof nickname !== 'string' || nickname.trim().length === 0) {
     nickname = undefined;
   }
+
+  const user = new User(socket.id, nickname);
 
   // TODO: reject with reason
   function reject() {
@@ -122,11 +128,13 @@ io.on('connection', socket => {
 
   // Check if parameters are valid
   if (role === undefined) {
+    console.log('Invalid role');
     reject();
     return;
   }
 
   if (typeof roomId !== 'string') {
+    console.log('Invalid roomId');
     reject();
     return;
   }
@@ -135,24 +143,33 @@ io.on('connection', socket => {
   const room = rooms.find(room => room.id === roomId);
 
   if (room === undefined) {
+    console.log('Room does not exist');
     reject();
     return;
   }
 
-  if (!room.onUserJoin(role, userId)) {
+  if (!room.onUserJoin(role, user)) {
     // Cannot join room with role
+    console.log('Cannot join with role');
     reject();
     return;
+  }
+
+  // If a spectator joins mid game, send game info
+  if (role === GameRoomRole.Spectator && room.gameInProgress) {
+    socket.emit(Events.startGame, {
+      room: room.toJson(),
+    });
   }
 
   // Join room success
+  console.log('Join room successfully');
   socket.join(roomId);
 
   const roomSocket = io.to(roomId);
 
   roomSocket.emit(Events.userJoined, {
-    userId,
-    nickname,
+    user: user.toJson(),
     room: room.toJson(),
   });
 
@@ -196,35 +213,43 @@ io.on('connection', socket => {
       }
 
       // Add step success
-      socket.emit(Events.stepAdded, {
+      roomSocket.emit(Events.stepAdded, {
         point: point.toJson(),
         side: side.valueOf(),
-        game: game.toJson(),
-        room: room.toJson(), // ? is this needed?
+        room: room.toJson(),
       });
     }
   });
 
-  // Start game if necessary
+  // Start game if both players joined
   if (room.canStartGame) {
     room.startGame();
-    roomSocket.emit(Events.startGame);
+    roomSocket.emit(Events.startGame, {
+      room: room.toJson(),
+    });
   }
 
   socket.on('disconnect', () => {
     console.log('User disconnected');
+    socket.removeAllListeners();
 
-    room.onUserLeave(role, userId);
+    room.onUserLeave(role, user);
 
-    // End game if one of the players left
-    if (room.gameInProgress && role !== GameRoomRole.Spectator) {
-      room.endGame();
+    if (room.isEmpty) {
+      // Room is empty, can delete
+      rooms.splice(rooms.indexOf(room));
+
+    } else {
+      // End game if one of the players left
+      if (room.gameInProgress && role !== GameRoomRole.Spectator) {
+        room.endGame();
+      }
+
+      roomSocket.emit(Events.userDisconnected, {
+        user: user.toJson(),
+        room: room.toJson(),
+      });
     }
-
-    roomSocket.emit(Events.userDisconnected, {
-      userId,
-      room: room.toJson(),
-    });
   });
 });
 

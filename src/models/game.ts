@@ -201,8 +201,12 @@ class Game {
     return lines.map(line => this.getWinDetails(line)).find(win => win !== undefined);
   }
 
-  private generate(length: number, generator: (n: number) => Point): Point[] {
-    return new Array(length).map((_, index) => generator(index));
+  private generate<T>(length: number, generator: (n: number) => T): T[] {
+    const arr = new Array(length);
+    for (let i=0; i<length; i++) {
+      arr[i] = generator(i);
+    }
+    return arr;
   }
 
   /// Check if there are consecutive 5 points with the same side on board

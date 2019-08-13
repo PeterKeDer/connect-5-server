@@ -1,5 +1,6 @@
 import { GameRoomSettings, GameRoomSettingsObject } from './game_room_settings';
 import { Game, GameObject } from './game';
+import { User, UserObject } from './user';
 
 enum GameRoomRole {
   Player1 = 1,
@@ -25,9 +26,9 @@ function gameRoomRoleFrom(n: any): GameRoomRole | undefined {
 interface GameRoomObject {
   id: string;
   settings: GameRoomSettingsObject;
-  player1?: string;
-  player2?: string;
-  spectators: string[];
+  player1?: UserObject;
+  player2?: UserObject;
+  spectators: UserObject[];
   game?: GameObject;
   gameInProgress: boolean;
 }
@@ -38,9 +39,9 @@ class GameRoom {
   constructor(
     public id: string,
     public settings: GameRoomSettings,
-    public player1?: string,
-    public player2?: string,
-    public spectators: string[] = [],
+    public player1?: User,
+    public player2?: User,
+    public spectators: User[] = [],
     public game?: Game,
   ) {}
 
@@ -48,12 +49,16 @@ class GameRoom {
     return {
       id: this.id,
       settings: this.settings,
-      player1: this.player1,
-      player2: this.player2,
-      spectators: this.spectators,
+      player1: this.player1 === undefined ? undefined : this.player1.toJson(),
+      player2: this.player2 === undefined ? undefined : this.player2.toJson(),
+      spectators: this.spectators.map((user) => user.toJson()),
       game: this.game === undefined ? undefined : this.game.toJson(),
       gameInProgress: this.gameInProgress,
     };
+  }
+
+  get isEmpty(): boolean {
+    return this.player1 === undefined && this.player2 === undefined && this.spectators.length === 0;
   }
 
   get canStartGame(): boolean {
@@ -70,23 +75,23 @@ class GameRoom {
     this.gameInProgress = false;
   }
 
-  onUserJoin(role: GameRoomRole, userId: string): boolean {
+  onUserJoin(role: GameRoomRole, user: User): boolean {
     switch (role) {
       case GameRoomRole.Player1:
-        if (this.player1 === undefined) {
-          this.player1 = userId;
+        if (this.player1 === undefined && !this.gameInProgress) {
+          this.player1 = user;
           return true;
         }
         break;
       case GameRoomRole.Player2:
-        if (this.player2 === undefined) {
-          this.player2 = userId;
+        if (this.player2 === undefined && !this.gameInProgress) {
+          this.player2 = user;
           return true;
         }
         break;
       case GameRoomRole.Spectator:
         if (this.settings.allowSpectators) {
-          this.spectators.push(userId);
+          this.spectators.push(user);
           return true;
         }
         break;
@@ -94,7 +99,7 @@ class GameRoom {
     return false;
   }
 
-  onUserLeave(role: GameRoomRole, userId: string) {
+  onUserLeave(role: GameRoomRole, user: User) {
     switch (role) {
       case GameRoomRole.Player1:
         this.player1 = undefined;
@@ -103,7 +108,7 @@ class GameRoom {
         this.player2 = undefined;
         break;
       case GameRoomRole.Spectator:
-        const index = this.spectators.indexOf(userId);
+        const index = this.spectators.indexOf(user);
         if (index !== -1) {
           this.spectators.splice(index, 1);
         }
