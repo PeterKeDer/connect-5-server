@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import socketio from 'socket.io';
 import bodyParser from 'body-parser';
-import { GameRoomSettings } from './models/game_room_settings';
+import { GameRoomSettings, GameRoomSettingsError } from './models/game_room_settings';
 import { GameRoom, gameRoomRoleFrom, GameRoomRole } from './models/game_room';
 import { Point, Side } from './models/game';
 import { User } from './models/user';
@@ -13,9 +13,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketio(server);
 
-const rooms: GameRoom[] = [
-  new GameRoom('ok', new GameRoomSettings())
-];
+const rooms: GameRoom[] = [new GameRoom('ok', new GameRoomSettings())];
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
@@ -36,25 +34,29 @@ app.get('/', (req, res) => {
     - invalid settings or roomId
     - roomId already exists
 */
-app.post('/create-room', (req, res, next) => {
+type CreateRoomError = GameRoomSettingsError | 'invalid_room_id' | 'room_id_taken';
+
+app.post('/create-room', (req, res) => {
+  function fail(error: CreateRoomError) {
+    res.status(400).send({ error });
+  }
+
   const settings = GameRoomSettings.fromJson(req.body.settings);
 
-  // TODO: also send back error
-  if (settings === undefined) {
-    res.sendStatus(400);
+  if (!(settings instanceof GameRoomSettings)) {
+    fail(settings);
     return;
   }
 
   const roomId = req.body.id;
 
-  if (typeof roomId !== 'string') {
-    res.sendStatus(400);
+  if (typeof roomId !== 'string' || roomId.trim().length == 0) {
+    fail('invalid_room_id');
     return;
   }
 
   if (rooms.find(room => room.id === roomId)) {
-    // Room id taken
-    res.sendStatus(400);
+    fail('room_id_taken');
     return;
   }
 
@@ -69,9 +71,33 @@ app.post('/create-room', (req, res, next) => {
 // Get the list of currently active rooms
 app.get('/rooms', (_, res) => {
   res.status(200).send({
-    rooms: rooms
-      .filter((room) => room.settings.isPublic)
-      .map(room => room.toJson()),
+    rooms: rooms.filter(room => room.settings.isPublic).map(room => room.toJson()),
+  });
+});
+
+type GetRoomError = 'invalid_room_id' | 'room_not_found';
+
+app.get('/rooms/:roomId', (req, res) => {
+  const roomId = req.params.roomId;
+
+  function fail(error: GetRoomError) {
+    res.status(400).send({ error });
+  }
+
+  if (typeof roomId !== 'string') {
+    fail('invalid_room_id');
+    return;
+  }
+
+  const room = rooms.find(room => room.id === roomId);
+
+  if (room === undefined) {
+    fail('room_not_found');
+    return;
+  }
+
+  res.status(200).send({
+    room: room.toJson(),
   });
 });
 
@@ -104,6 +130,8 @@ const UserEvents = {
       - role is player1 / player2, but room's player1 / player2 is already taken
       - role is spectator, but room does not allow spectators
 */
+type JoinRoomError = 'invalid_role' | 'invalid_room_id';
+
 io.on('connection', socket => {
   console.log('User connected');
   // TODO: if game in progress, then make user remain in lobby until the game finishes
@@ -121,21 +149,21 @@ io.on('connection', socket => {
   const user = new User(socket.id, nickname);
 
   // TODO: reject with reason
-  function reject() {
-    socket.emit(Events.failToJoin);
+  function fail(error: JoinRoomError) {
+    socket.emit(Events.failToJoin, { error });
     socket.disconnect();
   }
 
   // Check if parameters are valid
   if (role === undefined) {
     console.log('Invalid role');
-    reject();
+    fail('invalid_role');
     return;
   }
 
   if (typeof roomId !== 'string') {
     console.log('Invalid roomId');
-    reject();
+    fail('invalid_room_id');
     return;
   }
 
@@ -144,14 +172,14 @@ io.on('connection', socket => {
 
   if (room === undefined) {
     console.log('Room does not exist');
-    reject();
+    fail('invalid_room_id');
     return;
   }
 
   if (!room.onUserJoin(role, user)) {
     // Cannot join room with role
     console.log('Cannot join with role');
-    reject();
+    fail('invalid_role');
     return;
   }
 
@@ -238,7 +266,6 @@ io.on('connection', socket => {
     if (room.isEmpty) {
       // Room is empty, can delete
       rooms.splice(rooms.indexOf(room));
-
     } else {
       // End game if one of the players left
       if (room.gameInProgress && role !== GameRoomRole.Spectator) {
