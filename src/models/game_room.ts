@@ -31,10 +31,15 @@ interface GameRoomObject {
   spectators: UserObject[];
   game?: GameObject;
   gameInProgress: boolean;
+  player1Restart: boolean;
+  player2Restart: boolean;
 }
 
 class GameRoom {
   gameInProgress = false;
+
+  player1Restart: boolean = false;
+  player2Restart: boolean = false;
 
   constructor(
     public id: string,
@@ -51,10 +56,28 @@ class GameRoom {
       settings: this.settings,
       player1: this.player1 === undefined ? undefined : this.player1.toJson(),
       player2: this.player2 === undefined ? undefined : this.player2.toJson(),
-      spectators: this.spectators.map((user) => user.toJson()),
+      spectators: this.spectators.map(user => user.toJson()),
       game: this.game === undefined ? undefined : this.game.toJson(),
       gameInProgress: this.gameInProgress,
+      player1Restart: this.player1Restart,
+      player2Restart: this.player2Restart,
     };
+  }
+
+  get canResetGame(): boolean {
+    // Game did not start, cannot reset
+    if (this.game === undefined) {
+      return false;
+    }
+
+    // Can reset the game if the game finished and all players inside the room choose to restart
+    return !this.gameInProgress && (this.player1Restart || this.player1 === undefined) && (this.player2Restart || this.player2 === undefined);
+  }
+
+  resetGame() {
+    this.player1Restart = false;
+    this.player2Restart = false;
+    this.game = undefined;
   }
 
   get isEmpty(): boolean {
@@ -103,9 +126,11 @@ class GameRoom {
     switch (role) {
       case GameRoomRole.Player1:
         this.player1 = undefined;
+        this.player1Restart = false;
         break;
       case GameRoomRole.Player2:
         this.player2 = undefined;
+        this.player2Restart = false;
         break;
       case GameRoomRole.Spectator:
         const index = this.spectators.indexOf(user);

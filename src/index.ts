@@ -110,10 +110,13 @@ const Events = {
   startGame: 'start-game',
   stepAdded: 'step-added',
   failToAddStep: 'fail-to-add-step',
+  userSetRestart: 'user-set-restart',
+  gameReset: 'game-reset',
 };
 
 const UserEvents = {
   addStep: 'add-step',
+  restartGame: 'restart-game',
 };
 
 /*
@@ -134,7 +137,7 @@ type JoinRoomError = 'invalid_role' | 'invalid_room_id';
 
 io.on('connection', socket => {
   console.log('User connected');
-  // TODO: if game in progress, then make user remain in lobby until the game finishes
+
   const query = socket.handshake.query;
   const roomId = query.roomId;
   const role = gameRoomRoleFrom(Number.parseInt(query.role));
@@ -148,7 +151,6 @@ io.on('connection', socket => {
 
   const user = new User(socket.id, nickname);
 
-  // TODO: reject with reason
   function fail(error: JoinRoomError) {
     socket.emit(Events.failToJoin, { error });
     socket.disconnect();
@@ -156,13 +158,11 @@ io.on('connection', socket => {
 
   // Check if parameters are valid
   if (role === undefined) {
-    console.log('Invalid role');
     fail('invalid_role');
     return;
   }
 
   if (typeof roomId !== 'string') {
-    console.log('Invalid roomId');
     fail('invalid_room_id');
     return;
   }
@@ -171,14 +171,12 @@ io.on('connection', socket => {
   const room = rooms.find(room => room.id === roomId);
 
   if (room === undefined) {
-    console.log('Room does not exist');
     fail('invalid_room_id');
     return;
   }
 
   if (!room.onUserJoin(role, user)) {
     // Cannot join room with role
-    console.log('Cannot join with role');
     fail('invalid_role');
     return;
   }
@@ -191,7 +189,6 @@ io.on('connection', socket => {
   }
 
   // Join room success
-  console.log('Join room successfully');
   socket.join(roomId);
 
   const roomSocket = io.to(roomId);
@@ -236,8 +233,6 @@ io.on('connection', socket => {
 
       if (game.isFinished) {
         room.endGame();
-
-        // TODO: handle rematch event, quit, etc.
       }
 
       // Add step success
@@ -246,11 +241,61 @@ io.on('connection', socket => {
         side: side.valueOf(),
         room: room.toJson(),
       });
+
+      if (game.isFinished) {
+        // TODO: figure out how to do rematch logic
+        // Consider cases:
+        //  - both players still in: both need to press rematch?
+        //  - one player left: can immediately restart? and then start game when someone joins
+      }
+    }
+  });
+
+  socket.on(UserEvents.restartGame, () => {
+    // Cannot restart if user is a spectator, game is still on, or game hasn't started yet
+    if (role === GameRoomRole.Spectator || room.gameInProgress || room.game === undefined) {
+      return;
+    }
+
+    switch (role) {
+      case GameRoomRole.Player1:
+        if (room.player1Restart) {
+          return;
+        }
+        room.player1Restart = true;
+        break;
+      case GameRoomRole.Player2:
+        if (room.player2Restart) {
+          return;
+        }
+        room.player2Restart = true;
+        break;
+    }
+
+    roomSocket.emit(Events.userSetRestart, {
+      user: user.toJson(),
+      room: room.toJson(),
+    });
+
+    if (room.canResetGame) {
+      // Start the game immediately if possible. Otherwise reset (clear) the game
+      room.resetGame();
+      if (room.canStartGame) {
+        room.startGame();
+        roomSocket.emit(Events.startGame, {
+          room: room.toJson(),
+        });
+      } else {
+        // This happens when the a player left
+        roomSocket.emit(Events.gameReset, {
+          room: room.toJson(),
+        });
+      }
     }
   });
 
   // Start game if both players joined
-  if (room.canStartGame) {
+  if (room.canStartGame && room.game === undefined) {
     room.startGame();
     roomSocket.emit(Events.startGame, {
       room: room.toJson(),
@@ -263,6 +308,9 @@ io.on('connection', socket => {
 
     room.onUserLeave(role, user);
 
+    // TODO: handle temporary disconnects, and allows continue game after user disconnects for a short time
+    // however should immediately end game if all users left
+
     if (room.isEmpty) {
       // Room is empty, can delete
       rooms.splice(rooms.indexOf(room));
@@ -270,6 +318,11 @@ io.on('connection', socket => {
       // End game if one of the players left
       if (room.gameInProgress && role !== GameRoomRole.Spectator) {
         room.endGame();
+      } else if (room.canResetGame) {
+        room.resetGame();
+        roomSocket.emit(Events.gameReset, {
+          room: room.toJson(),
+        });
       }
 
       roomSocket.emit(Events.userDisconnected, {
