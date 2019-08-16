@@ -5,7 +5,7 @@ import bodyParser from 'body-parser';
 import { GameRoomSettings, GameRoomSettingsError } from './models/game_room_settings';
 import { GameRoom, gameRoomRoleFrom, GameRoomRole } from './models/game_room';
 import { Point, Side } from './models/game';
-import { User } from './models/user';
+import { User, UserObject } from './models/user';
 
 const port = 8080;
 
@@ -101,18 +101,21 @@ app.get('/rooms/:roomId', (req, res) => {
   });
 });
 
-// TODO: maybe condense most events into one - roomUpdated, with field lastAction to indicate what happened
 const Events = {
-  connection: 'connection',
   failToJoin: 'fail-to-join',
-  userJoined: 'user-joined',
-  userDisconnected: 'user-disconnected',
-  startGame: 'start-game',
-  stepAdded: 'step-added',
   failToAddStep: 'fail-to-add-step',
-  userSetRestart: 'user-set-restart',
-  gameReset: 'game-reset',
+  roomUpdated: 'room-updated',
 };
+
+type RoomEvent =
+    {
+      description: 'user-joined' | 'user-disconnected' | 'user-set-restart',
+      user: UserObject,
+      role: number,
+    }
+  | {
+      description: 'start-game' | 'step-added' | 'game-ended' | 'game-reset',
+    };
 
 const UserEvents = {
   addStep: 'add-step',
@@ -181,21 +184,21 @@ io.on('connection', socket => {
     return;
   }
 
-  // If a spectator joins mid game, send game info
-  if (role === GameRoomRole.Spectator && room.gameInProgress) {
-    socket.emit(Events.startGame, {
-      room: room.toJson(),
-    });
-  }
-
   // Join room success
   socket.join(roomId);
 
-  const roomSocket = io.to(roomId);
+  /// Emit an event to room, with updated room object
+  function emitRoom(event: RoomEvent) {
+    io.to(roomId).emit(Events.roomUpdated, {
+      room: room === undefined ? undefined : room.toJson(),
+      event,
+    });
+  }
 
-  roomSocket.emit(Events.userJoined, {
+  emitRoom({
+    description: 'user-joined',
     user: user.toJson(),
-    room: room.toJson(),
+    role: role.valueOf(),
   });
 
   // Subscribe to add step event
@@ -236,17 +239,10 @@ io.on('connection', socket => {
       }
 
       // Add step success
-      roomSocket.emit(Events.stepAdded, {
-        point: point.toJson(),
-        side: side.valueOf(),
-        room: room.toJson(),
-      });
+      emitRoom({ description: 'step-added' });
 
       if (game.isFinished) {
-        // TODO: figure out how to do rematch logic
-        // Consider cases:
-        //  - both players still in: both need to press rematch?
-        //  - one player left: can immediately restart? and then start game when someone joins
+        emitRoom({ description: 'game-ended' });
       }
     }
   });
@@ -272,34 +268,38 @@ io.on('connection', socket => {
         break;
     }
 
-    roomSocket.emit(Events.userSetRestart, {
-      user: user.toJson(),
-      room: room.toJson(),
-    });
+    var resetGame = false;
+    var startGame = false;
 
     if (room.canResetGame) {
       // Start the game immediately if possible. Otherwise reset (clear) the game
       room.resetGame();
+      resetGame = true;
+
       if (room.canStartGame) {
         room.startGame();
-        roomSocket.emit(Events.startGame, {
-          room: room.toJson(),
-        });
-      } else {
-        // This happens when the a player left
-        roomSocket.emit(Events.gameReset, {
-          room: room.toJson(),
-        });
+        startGame = true;
       }
+    }
+
+    // Emit event after updating room
+    emitRoom({
+      description: 'user-set-restart',
+      user: user.toJson(),
+      role: role.valueOf(),
+    });
+
+    if (startGame) {
+      emitRoom({ description: 'start-game' });
+    } else if (resetGame) {
+      emitRoom({ description: 'game-reset' });
     }
   });
 
   // Start game if both players joined
   if (room.canStartGame && room.game === undefined) {
     room.startGame();
-    roomSocket.emit(Events.startGame, {
-      room: room.toJson(),
-    });
+    emitRoom({ description: 'start-game' });
   }
 
   socket.on('disconnect', () => {
@@ -316,19 +316,24 @@ io.on('connection', socket => {
       rooms.splice(rooms.indexOf(room));
     } else {
       // End game if one of the players left
+      let endedGame = false;
       if (room.gameInProgress && role !== GameRoomRole.Spectator) {
+        endedGame = true;
         room.endGame();
       } else if (room.canResetGame) {
         room.resetGame();
-        roomSocket.emit(Events.gameReset, {
-          room: room.toJson(),
-        });
+        emitRoom({ description: 'game-reset' });
       }
 
-      roomSocket.emit(Events.userDisconnected, {
+      emitRoom({
+        description: 'user-disconnected',
         user: user.toJson(),
-        room: room.toJson(),
+        role: role.valueOf(),
       });
+
+      if (endedGame) {
+        emitRoom({ description: 'game-ended' });
+      }
     }
   });
 });
