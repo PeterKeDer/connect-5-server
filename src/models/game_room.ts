@@ -98,26 +98,41 @@ class GameRoom {
     this.gameInProgress = false;
   }
 
-  onUserJoin(role: GameRoomRole, user: User): boolean {
+  canJoin(role: GameRoomRole): boolean {
     switch (role) {
       case GameRoomRole.Player1:
         if (this.player1 === undefined && !this.gameInProgress) {
-          this.player1 = user;
           return true;
         }
         break;
       case GameRoomRole.Player2:
         if (this.player2 === undefined && !this.gameInProgress) {
-          this.player2 = user;
           return true;
         }
         break;
       case GameRoomRole.Spectator:
         if (this.settings.allowSpectators) {
-          this.spectators.push(user);
           return true;
         }
         break;
+    }
+    return false;
+  }
+
+  onUserJoin(role: GameRoomRole, user: User): boolean {
+    if (this.canJoin(role)) {
+      switch (role) {
+        case GameRoomRole.Player1:
+          this.player1 = user;
+          break;
+        case GameRoomRole.Player2:
+          this.player2 = user;
+          break;
+        case GameRoomRole.Spectator:
+          this.spectators.push(user);
+          break;
+      }
+      return true;
     }
     return false;
   }

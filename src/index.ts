@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import socketio from 'socket.io';
 import bodyParser from 'body-parser';
+import uuidv1 from 'uuid/v1';
 import { GameRoomSettings, GameRoomSettingsError } from './models/game_room_settings';
 import { GameRoom, gameRoomRoleFrom, GameRoomRole } from './models/game_room';
 import { Point, Side } from './models/game';
@@ -36,6 +37,7 @@ app.get('/', (req, res) => {
 */
 type CreateRoomError = GameRoomSettingsError | 'invalid_room_id' | 'room_id_taken';
 
+// TODO: add join-room login into here so client only needs to call create-room instead of create-room then join-room
 app.post('/create-room', (req, res) => {
   function fail(error: CreateRoomError) {
     res.status(400).send({ error });
@@ -67,6 +69,72 @@ app.post('/create-room', (req, res) => {
     room: room.toJson(),
   });
 });
+
+type JoinRoomError = 'invalid_role' | 'invalid_room_id';
+
+app.post('/join-room', (req, res) => {
+  function fail(error: JoinRoomError) {
+    res.status(400).send({ error });
+  }
+
+  const roomId = req.body.roomId;
+  const role = gameRoomRoleFrom(req.body.role);
+
+  let nickname: string | undefined = req.body.nickname;
+
+  if (typeof nickname !== 'string') {
+    nickname = undefined;
+  }
+
+  if (typeof roomId !== 'string') {
+    fail('invalid_room_id');
+    return;
+  }
+
+  if (role === undefined) {
+    fail('invalid_role');
+    return;
+  }
+
+  const room = rooms.find((room) => room.id === roomId);
+
+  if (room === undefined) {
+    fail('invalid_room_id');
+    return;
+  }
+
+  const userId = uuidv1();
+  const user = new User(userId, nickname, false);
+
+  if (!room.onUserJoin(role, user)) {
+    fail('invalid_role');
+    return;
+  }
+
+  const pendingUser = { user, room, role };
+  pendingUsers.push(pendingUser);
+
+  res.status(200).send({ userId });
+
+  setTimeout(() => {
+    // If user does not connect to socket after delay, it will be removed from pending users and the room
+    const index = pendingUsers.indexOf(pendingUser);
+    if (index !== -1) {
+      pendingUsers.splice(index, 1);
+      pendingUser.room.onUserLeave(role, user);
+    }
+  }, 10000);
+});
+
+/// Users pending to connect to socket after calling join-room or create-room
+type PendingUser = {
+  user: User;
+  room: GameRoom;
+  role: GameRoomRole;
+}
+const pendingUsers: PendingUser[] = [];
+
+const disconnectedUsers: PendingUser[] = [];
 
 // Get the list of currently active rooms
 app.get('/rooms', (_, res) => {
@@ -109,7 +177,7 @@ const Events = {
 
 type RoomEvent =
     {
-      description: 'user-joined' | 'user-disconnected' | 'user-set-restart',
+      description: 'user-joined' | 'user-left' | 'user-set-restart' | 'user-disconnected' | 'user-reconnected',
       user: UserObject,
       role: number,
     }
@@ -120,6 +188,7 @@ type RoomEvent =
 const UserEvents = {
   addStep: 'add-step',
   restartGame: 'restart-game',
+  leaveGame: 'leave-game',
 };
 
 /*
@@ -136,72 +205,91 @@ const UserEvents = {
       - role is player1 / player2, but room's player1 / player2 is already taken
       - role is spectator, but room does not allow spectators
 */
-type JoinRoomError = 'invalid_role' | 'invalid_room_id';
+
+type ConnectRoomError = 'invalid_user_id' | 'connection_timeout';
 
 io.on('connection', socket => {
-  console.log('User connected');
+  const userId = socket.handshake.query.userId;
 
-  const query = socket.handshake.query;
-  const roomId = query.roomId;
-  const role = gameRoomRoleFrom(Number.parseInt(query.role));
-
-  // If nickname is undefined, display as 'Guest'
-  let nickname: string | undefined = query.nickname;
-
-  if (typeof nickname !== 'string' || nickname.trim().length === 0) {
-    nickname = undefined;
-  }
-
-  const user = new User(socket.id, nickname);
-
-  function fail(error: JoinRoomError) {
+  function fail(error: ConnectRoomError) {
     socket.emit(Events.failToJoin, { error });
-    socket.disconnect();
+    socket.disconnect(true);
   }
 
-  // Check if parameters are valid
-  if (role === undefined) {
-    fail('invalid_role');
+  if (typeof userId !== 'string') {
+    fail('invalid_user_id');
     return;
   }
 
-  if (typeof roomId !== 'string') {
-    fail('invalid_room_id');
+  // Find user in pending users
+  const pendingIndex = pendingUsers.findIndex((pendingUser) => pendingUser.user.id === userId);
+
+  if (pendingIndex !== -1) {
+    const pendingUser = pendingUsers[pendingIndex];
+
+    // User connected, remove from pending
+    pendingUsers.splice(pendingIndex, 1);
+
+    handleUserConnected(socket, pendingUser);
     return;
   }
 
-  // Get room with roomId
-  const room = rooms.find(room => room.id === roomId);
+  const disconnectedIndex = disconnectedUsers.findIndex((disconnectedUser) => disconnectedUser.user.id === userId);
 
-  if (room === undefined) {
-    fail('invalid_room_id');
+  if (disconnectedIndex !== -1) {
+    const disconnectedUser = disconnectedUsers[disconnectedIndex];
+
+    disconnectedUsers.splice(disconnectedIndex, 1);
+
+    handleUserReconnected(socket, disconnectedUser);
     return;
   }
 
-  if (!room.onUserJoin(role, user)) {
-    // Cannot join room with role
-    fail('invalid_role');
-    return;
-  }
+  // Cannot find pending or disconnected user matching id, failed due to timeout
+  fail('connection_timeout');
+});
+
+/// Emit an event to a room, with updated room object
+function emitRoom(room: GameRoom, event: RoomEvent) {
+  io.to(room.id).emit(Events.roomUpdated, {
+    room: room.toJson(),
+    event,
+  });
+}
+
+/// Handle user reconnecting to a room after being temporarily disconnected
+function handleUserReconnected(socket: socketio.Socket, { user, room, role }: PendingUser) {
+  user.isConnected = true;
+
+  socket.join(room.id);
+
+  emitRoom(room, {
+    description: 'user-reconnected',
+    user: user.toJson(),
+    role: role.valueOf(),
+  })
+
+  subscribeToSocketEvents(socket, user, room, role);
+}
+
+/// Handle user initially connecting to a room
+function handleUserConnected(socket: socketio.Socket, { user, room, role }: PendingUser) {
+  user.isConnected = true;
 
   // Join room success
-  socket.join(roomId);
+  socket.join(room.id);
 
-  /// Emit an event to room, with updated room object
-  function emitRoom(event: RoomEvent) {
-    io.to(roomId).emit(Events.roomUpdated, {
-      room: room === undefined ? undefined : room.toJson(),
-      event,
-    });
-  }
-
-  emitRoom({
+  emitRoom(room, {
     description: 'user-joined',
     user: user.toJson(),
     role: role.valueOf(),
   });
 
-  // Subscribe to add step event
+  subscribeToSocketEvents(socket, user, room, role);
+}
+
+/// Subscribe to socket events of user
+function subscribeToSocketEvents(socket: socketio.Socket, user: User, room: GameRoom, role: GameRoomRole) {
   socket.on(UserEvents.addStep, param => {
     if (role !== GameRoomRole.Spectator && room.gameInProgress && room.game !== undefined) {
       const game = room.game;
@@ -239,10 +327,10 @@ io.on('connection', socket => {
       }
 
       // Add step success
-      emitRoom({ description: 'step-added' });
+      emitRoom(room, { description: 'step-added' });
 
       if (game.isFinished) {
-        emitRoom({ description: 'game-ended' });
+        emitRoom(room, { description: 'game-ended' });
       }
     }
   });
@@ -283,33 +371,27 @@ io.on('connection', socket => {
     }
 
     // Emit event after updating room
-    emitRoom({
+    emitRoom(room, {
       description: 'user-set-restart',
       user: user.toJson(),
       role: role.valueOf(),
     });
 
     if (startGame) {
-      emitRoom({ description: 'start-game' });
+      emitRoom(room, { description: 'start-game' });
     } else if (resetGame) {
-      emitRoom({ description: 'game-reset' });
+      emitRoom(room, { description: 'game-reset' });
     }
   });
 
   // Start game if both players joined
   if (room.canStartGame && room.game === undefined) {
     room.startGame();
-    emitRoom({ description: 'start-game' });
+    emitRoom(room, { description: 'start-game' });
   }
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected');
-    socket.removeAllListeners();
-
+  function handleUserLeft() {
     room.onUserLeave(role, user);
-
-    // TODO: handle temporary disconnects, and allows continue game after user disconnects for a short time
-    // however should immediately end game if all users left
 
     if (room.isEmpty) {
       // Room is empty, can delete
@@ -322,20 +404,49 @@ io.on('connection', socket => {
         room.endGame();
       } else if (room.canResetGame) {
         room.resetGame();
-        emitRoom({ description: 'game-reset' });
+        emitRoom(room, { description: 'game-reset' });
       }
 
-      emitRoom({
-        description: 'user-disconnected',
+      emitRoom(room, {
+        description: 'user-left',
         user: user.toJson(),
         role: role.valueOf(),
       });
 
       if (endedGame) {
-        emitRoom({ description: 'game-ended' });
+        emitRoom(room, { description: 'game-ended' });
       }
     }
+
+    socket.removeAllListeners();
+    socket.disconnect(true);
+  }
+
+  socket.on(UserEvents.leaveGame, () => {
+    handleUserLeft();
   });
-});
+
+  socket.on('disconnect', () => {
+    user.isConnected = false;
+
+    emitRoom(room, {
+      description: 'user-disconnected',
+      user: user.toJson(),
+      role: role.valueOf(),
+    })
+
+    const disconnectedUser = { user, room, role };
+    disconnectedUsers.push(disconnectedUser);
+
+    // Make user leave the room after a delay
+    setTimeout(() => {
+      const index = disconnectedUsers.indexOf(disconnectedUser);
+      if (index !== -1) {
+        disconnectedUsers.splice(index, 1);
+        handleUserLeft();
+      }
+    }, 1000 * 60); // max 1 minute timeout
+  });
+}
 
 server.listen(port, () => console.log(`Connect 5 Server started at http://localhost:${port}`));
