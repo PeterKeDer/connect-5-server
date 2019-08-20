@@ -8,18 +8,16 @@ export class RoomManager {
     new GameRoom('ok', new GameRoomSettings()),
   ];
 
-  createRoom(roomId: string, settings: GameRoomSettings): GameRoom {
-    const room = new GameRoom(roomId, settings);
-    this.rooms.push(room);
-    return room;
-  }
-
   findRoomById(roomId: string): GameRoom | undefined {
     return this.rooms.find((room) => room.id === roomId);
   }
 
   getPublicRooms(): GameRoom[] {
     return this.rooms.filter((room) => room.settings.isPublic);
+  }
+
+  addRoom(room: GameRoom) {
+    this.rooms.push(room);
   }
 
   removeRoom(room: GameRoom) {

@@ -1,6 +1,6 @@
 import { Socket, Server } from 'socket.io';
 import { Events, UserEvents, RoomEvent } from '../socket_events';
-import { UserManager, PendingUser } from '../helpers/user_manager';
+import { UserManager } from '../helpers/user_manager';
 import { RoomManager } from '../helpers/room_manager';
 import { GameRoomRole, GameRoom } from '../models/game_room';
 import { Point, Side } from '../models/game';
@@ -13,17 +13,11 @@ export class SocketController {
 
   /*
     Handshake Query:
-      - roomId: string
-      - role: 1, 2, or 3
-      - nickname: string | undefined
+      - userId: string - the user id returned from calling join-room
 
-    Errors:
-      - invalid roomId
-      - invalid role
-      - room does not exist
-      - cannot join room. This includes:
-        - role is player1 / player2, but room's player1 / player2 is already taken
-        - role is spectator, but room does not allow spectators
+    Error: ConnectRoomError
+      - invalid user id
+      - timeout (took to long to either connect or reconnect)
   */
   public handleSocketConnection = (socket: Socket) => {
     const userId = socket.handshake.query.userId;

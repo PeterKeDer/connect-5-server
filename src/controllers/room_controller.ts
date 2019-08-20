@@ -2,43 +2,55 @@ import { Request, Response } from 'express';
 import { GameRoomSettings, GameRoomSettingsError } from '../models/game_room_settings';
 import { RoomManager } from '../helpers/room_manager';
 import { UserManager } from '../helpers/user_manager';
-import { gameRoomRoleFrom } from '../models/game_room';
+import { gameRoomRoleFrom, GameRoom } from '../models/game_room';
 import { User } from '../models/user';
 import uuidv1 from 'uuid/v1';
 
-type CreateRoomError = GameRoomSettingsError | 'invalid_room_id' | 'room_id_taken';
+type CreateRoomError = GameRoomSettingsError | 'invalid_room_id' | 'room_id_taken' | 'invalid_role';
 
 function postCreateRoom(req: Request, res: Response) {
-  // TODO: add join-room login into here so client only needs to call create-room instead of create-room then join-room
-
   function fail(error: CreateRoomError) {
     res.status(400).send({ error });
   }
 
   const settings = GameRoomSettings.fromJson(req.body.settings);
+  const roomId = req.body.id;
+  const role = gameRoomRoleFrom(req.body.role);
 
-  if (!(settings instanceof GameRoomSettings)) {
-    fail(settings);
-    return;
+  let nickname: string | undefined = req.body.nickname;
+
+  if (typeof nickname !== 'string') {
+    nickname = undefined;
   }
 
-  const roomId = req.body.id;
+  if (!(settings instanceof GameRoomSettings)) {
+    return fail(settings);
+  }
 
   if (typeof roomId !== 'string' || roomId.trim().length == 0) {
-    fail('invalid_room_id');
-    return;
+    return fail('invalid_room_id');
+  }
+
+  if (role === undefined) {
+    return fail('invalid_role');
   }
 
   if (RoomManager.shared.findRoomById(roomId) !== undefined) {
-    fail('room_id_taken');
-    return;
+    return fail('room_id_taken');
   }
 
-  const room = RoomManager.shared.createRoom(roomId, settings);
+  const userId = uuidv1();
+  const user = new User(userId, nickname, false);
+  const room = new GameRoom(roomId, settings);
 
-  res.status(200).send({
-    room: room.toJson(),
-  });
+  if (!room.onUserJoin(role, user)) {
+    return fail('invalid_role');
+  }
+
+  RoomManager.shared.addRoom(room);
+  UserManager.shared.addPendingUser(user, room, role, () => room.onUserLeave(role, user));
+
+  res.status(200).send({ userId });
 }
 
 type JoinRoomError = 'invalid_role' | 'invalid_room_id';
@@ -58,28 +70,24 @@ function postJoinRoom(req: Request, res: Response) {
   }
 
   if (typeof roomId !== 'string') {
-    fail('invalid_room_id');
-    return;
+    return fail('invalid_room_id');
   }
 
   if (role === undefined) {
-    fail('invalid_role');
-    return;
+    return fail('invalid_role');
   }
 
   const room = RoomManager.shared.findRoomById(roomId);
 
   if (room === undefined) {
-    fail('invalid_room_id');
-    return;
+    return fail('invalid_room_id');
   }
 
   const userId = uuidv1();
   const user = new User(userId, nickname, false);
 
   if (!room.onUserJoin(role, user)) {
-    fail('invalid_role');
-    return;
+    return fail('invalid_role');
   }
 
   UserManager.shared.addPendingUser(user, room, role, () => room.onUserLeave(role, user));
@@ -96,22 +104,20 @@ function getRooms(_: Request, res: Response) {
 type GetRoomError = 'invalid_room_id' | 'room_not_found';
 
 function getRoomById(req: Request, res: Response) {
-  const roomId = req.params.roomId;
-
   function fail(error: GetRoomError) {
     res.status(400).send({ error });
   }
 
+  const roomId = req.params.roomId;
+
   if (typeof roomId !== 'string') {
-    fail('invalid_room_id');
-    return;
+    return fail('invalid_room_id');
   }
 
   const room = RoomManager.shared.findRoomById(roomId);
 
   if (room === undefined) {
-    fail('room_not_found');
-    return;
+    return fail('room_not_found');
   }
 
   res.status(200).send({
