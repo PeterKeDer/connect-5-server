@@ -6,6 +6,26 @@ import { gameRoomRoleFrom, GameRoom } from '../models/game_room';
 import { User } from '../models/user';
 import uuidv1 from 'uuid/v1';
 
+const NICKNAME_MAX_LENGTH = 16;
+const ROOM_ID_MAX_LENGTH = 16;
+
+function validateRoomId(roomId: any): roomId is string {
+  if (typeof roomId !== 'string') {
+    return false;
+  }
+
+  return 0 < roomId.trim().length && roomId.length <= ROOM_ID_MAX_LENGTH;
+}
+
+function validateNickname(nickname: any): nickname is string {
+  if (typeof nickname !== 'string') {
+    return false;
+  }
+
+  const trimmedLength = nickname.trim().length;
+  return 0 < trimmedLength && trimmedLength <= NICKNAME_MAX_LENGTH;
+}
+
 type CreateRoomError = GameRoomSettingsError | 'invalid_room_id' | 'room_id_taken' | 'invalid_role';
 
 function postCreateRoom(req: Request, res: Response) {
@@ -19,15 +39,17 @@ function postCreateRoom(req: Request, res: Response) {
 
   let nickname: string | undefined = req.body.nickname;
 
-  if (typeof nickname !== 'string') {
+  if (!validateNickname(nickname)) {
     nickname = undefined;
+  } else {
+    nickname = nickname.trim();
   }
 
   if (!(settings instanceof GameRoomSettings)) {
     return fail(settings);
   }
 
-  if (typeof roomId !== 'string' || roomId.trim().length == 0) {
+  if (!validateRoomId(roomId)) {
     return fail('invalid_room_id');
   }
 
@@ -65,8 +87,10 @@ function postJoinRoom(req: Request, res: Response) {
 
   let nickname: string | undefined = req.body.nickname;
 
-  if (typeof nickname !== 'string') {
+  if (!validateNickname(nickname)) {
     nickname = undefined;
+  } else {
+    nickname = nickname.trim();
   }
 
   if (typeof roomId !== 'string') {
@@ -110,7 +134,7 @@ function getRoomById(req: Request, res: Response) {
 
   const roomId = req.params.roomId;
 
-  if (typeof roomId !== 'string') {
+  if (!validateRoomId(roomId)) {
     return fail('invalid_room_id');
   }
 

@@ -198,6 +198,8 @@ export class SocketController {
     }
 
     let handleUserLeft = () => {
+      user.isConnected = false;
+
       room.onUserLeave(role, user);
 
       if (room.isEmpty) {
@@ -232,6 +234,10 @@ export class SocketController {
     socket.on(UserEvents.leaveGame, handleUserLeft);
 
     socket.on('disconnect', () => {
+      if (!user.isConnected) {
+        return;
+      }
+
       user.isConnected = false;
 
       this.emitRoom(room, {
