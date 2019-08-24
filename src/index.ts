@@ -5,7 +5,7 @@ import bodyParser from 'body-parser';
 import roomController from './controllers/room_controller';
 import { SocketController } from './controllers/socket_controller';
 
-const port = 8080;
+const port = process.env.PORT || 8080;
 
 const app = express();
 const server = http.createServer(app);
