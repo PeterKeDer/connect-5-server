@@ -44,13 +44,13 @@ export class UserManager {
     };
   }
 
-  /// Add a user to disconnected users, and will be automatically removed after a delay
+  /// Add a user to pending users, and will be automatically removed after a delay
   addPendingUser(user: User, room: GameRoom, role: GameRoomRole, removedHandler: () => void) {
     this.pendingUsers.push({ user, room, role });
 
-    // Make user leave the room after a delay
+    // Make user leave pending after a delay
     setTimeout(() => {
-      if (this.removeFromDisconnected(user.id)) {
+      if (this.removeFromPending(user.id)) {
         removedHandler();
       }
     }, UserManager.PENDING_USER_TIMEOUT);
